@@ -1,6 +1,6 @@
 # SOVEREIGN CONTRACT
 
-**Version:** 1.1
+**Version:** 1.2
 **Authority:** KilimanjaroCode organization
 **Status:** Active
 **Last updated:** 2026-03-16
@@ -172,7 +172,7 @@ UIGen-specific constitutional pre-flight. Translates UIGen action signals into U
 
 ```typescript
 {
-  uigen_action:            "artifact_publish" | "variant_approve" | "variant_publish";
+  uigen_action:            "artifact_publish" | "variant_approve" | "variant_publish" | "blueprint_submit";
   initiator_did:           string;            // defaults to UIGEN_SYSTEM_DID
   artifact_name?:          string;
   artifact_description?:   string;
@@ -186,6 +186,8 @@ UIGen-specific constitutional pre-flight. Translates UIGen action signals into U
   lines_changed?:          number;
   added_components?:       string[];
   removed_components?:     string[];
+  artifact_type?:          string;            // blueprint_submit — type of artifact (e.g. "ui-component")
+  blueprint_description?:  string;            // blueprint_submit — human description
 }
 ```
 
@@ -445,6 +447,33 @@ Written by `/api/ikhaya/mance-deliberate` after every call, regardless of whethe
 
 External callers may use `write_observation(key, value, category)` to store arbitrary encrypted observations. No schema is enforced beyond the ikhaya_memory table structure. Use the `"preference"` category for Steward preference data.
 
+#### 7.3.6 `forge_event` observation (category: `"forge"`)
+
+Written by `ForgeEngine` via `presence.write_observation()` at construction-layer boundary events.
+
+```typescript
+{
+  event_type:           "blueprint_submitted" | "gate_approved" | "gate_rejected"
+                      | "build_started" | "build_complete" | "build_failed";
+  blueprint_id:         string;
+  requested_by:         string;            // DID of UIGen system node
+  // conditional per event_type:
+  artifact_type?:       string;            // blueprint_submitted
+  grant_id?:            string;            // gate_approved, build_*
+  ubuntu_score?:        number;            // gate_approved
+  gate_log_entry_id?:   string;            // gate_approved, gate_rejected
+  rationale?:           string;            // gate_rejected
+  build_id?:            string;            // build_*
+  state?:               string;            // build_*
+  message?:             string;            // build_failed
+  duration_ms?:         number;            // build_complete, build_failed
+  merkle_root?:         string;            // build_complete
+  timestamp:            number;            // Unix epoch
+}
+```
+
+Key format written to ikhaya_memory: `f"forge:{event_type}:{blueprint_id}"`
+
 ---
 
 ## 8. Governance Event Details Schemas
@@ -556,6 +585,161 @@ Produced by `computeSemanticDelta()` in UIGen and passed to both the gate check 
 | `SIFISO_OS_URL` | uigen | No | Base URL of Sifiso OS backend; omit for development (fail-open) |
 | `UIGEN_SYSTEM_DID` | uigen | No | DID for UIGen system actions; defaults to `did:key:zuigen` |
 | `JWT_SECRET` | uigen | No | Signs session JWTs; defaults to `development-secret-key` |
+| `FORGE_URL` | uigen | No | Forge API base URL; absent → fail-open stubs in `src/lib/forge.ts` |
+| `FORGE_DID` | sifiso-os | No | Forge system DID for BuildGrant stubs; defaults to `did:key:zforge-system-node-dev` |
+
+---
+
+## 12. Blueprint & Build Protocol
+
+The Forge is the **construction layer** of the sovereign stack — it accepts governance-approved blueprints from UIGen and assembles deterministic build artifacts. UIGen (cognition) and The Forge (construction) are constitutionally separated: UIGen never assembles artifacts; The Forge never generates UI.
+
+### 12.1 Core Principles
+
+1. **Separation of cognition and construction** — UIGen generates and evaluates; The Forge assembles. Neither crosses the boundary.
+2. **Governance-first** — No `BuildRequest` may be submitted without a `BuildGrant` carrying a valid `grant_id` (the SHA-256 `log_entry_id` from the Sovereign Gate log). Gate bypass is a constitutional violation.
+3. **Deterministic reproducibility** — Given the same `Blueprint` and `BuildGrant`, The Forge must produce the same `merkle_root`. Non-deterministic build inputs are rejected.
+4. **Narrative transparency** — Every build boundary event (blueprint submitted, gate approved/rejected, build complete/failed) is narrated via iKhaya and written to `ikhaya_memory` as a `forge_event` observation (§7.3.6).
+5. **Mesh-verifiable** — Build artifacts carry a `merkle_root` and `grant_id` so any Mesh node can independently verify provenance. (Mesh verification is Phase 32+.)
+
+### 12.2 Data Models
+
+```typescript
+// Blueprint — the UI construction intent from UIGen
+interface Blueprint {
+  blueprint_id:      string;    // UIGen artifact or project identifier
+  artifact_type:     string;    // e.g. "ui-component", "page", "dashboard"
+  name:              string;
+  description?:      string;
+  components:        string[];  // component names from the UIGen registry
+  files_hash?:       string;    // SHA-256 of all virtual file contents
+  semantic_summary?: string;    // from artifact introspection
+  requested_by:      string;    // DID of the UIGen system node
+}
+
+// BuildGrant — proof that the Sovereign Gate approved this blueprint submission
+interface BuildGrant {
+  grant_id:     string;   // = gate log_entry_id (SHA-256 hex, 64 chars)
+  approved_by:  string;   // DID of the UIGen system node (UIGEN_SYSTEM_DID)
+  signature:    string;   // Phase 31 stub: "{FORGE_DID}:stub"; Phase 32: Ed25519 hex
+  ubuntu_score: number;   // ubuntu_score from the gate result (0.0–1.0)
+}
+
+// BuildRequest — what UIGen submits to The Forge
+interface BuildRequest {
+  blueprint: Blueprint;
+  grant:     BuildGrant;
+}
+
+// BuildStatus — returned after submission and on status polling
+interface BuildStatus {
+  build_id:     string;   // UUID4 assigned by Forge
+  blueprint_id: string;
+  grant_id:     string;
+  state:        "ACCEPTED" | "COMPLETE" | "FAILED";
+  message:      string;
+  submitted_at: string;   // ISO-8601
+}
+
+// BuildArtifact — the assembled output of a completed build
+interface BuildArtifact {
+  build_id:     string;
+  blueprint_id: string;
+  state:        string;
+  merkle_root:  string;   // SHA-256; Phase 31: sha256(blueprint_id); Phase 32: real Merkle tree
+  manifest:     ArtifactManifest;
+}
+
+interface ArtifactManifest {
+  blueprint_id:  string;
+  artifact_type: string;
+  name:          string;
+  files:         FileEntry[];
+  merkle_root:   string;
+  built_at:      string;  // ISO-8601
+}
+
+interface FileEntry {
+  path:         string;
+  content_hash: string;
+  size_bytes:   number;
+}
+```
+
+### 12.3 Forge Endpoints
+
+All endpoints are mounted at `/forge` on The Forge service.
+
+#### `POST /forge/blueprint`
+
+Validate a blueprint against Forge acceptance criteria. Does not start a build.
+
+**Request:** `Blueprint`
+
+**Response:**
+```typescript
+{ valid: boolean; blueprint_id: string; message: string; }
+```
+
+**Validation rules:**
+- `blueprint_id` must be non-empty
+- `artifact_type` must be non-empty
+- `components` must contain at least one entry
+- `requested_by` must match `/^did:key:z/`
+
+#### `POST /forge/build`
+
+Submit a build request. Requires a `BuildGrant` with a non-empty `grant_id`.
+
+**Request:** `BuildRequest`
+
+**Response:** `BuildStatus` (initial state `"ACCEPTED"`, immediately transitions to `"COMPLETE"` in Phase 31 stubs)
+
+**Invariant:** `grant_id` must be non-empty; absent or empty `grant_id` returns HTTP 400.
+
+#### `GET /forge/build/{build_id}/status`
+
+Poll the current state of a build. Returns HTTP 404 when `build_id` is unknown.
+
+**Response:** `BuildStatus`
+
+#### `GET /forge/build/{build_id}/artifact`
+
+Retrieve the assembled artifact for a completed build. Returns HTTP 404 when unknown.
+
+**Response:** `BuildArtifact`
+
+### 12.4 Governance Rules
+
+1. No `BuildRequest` may be submitted without a `BuildGrant` carrying a non-empty `grant_id`.
+2. The `grant_id` must be a valid Sovereign Gate log entry ID (64-char SHA-256 hex) in live deployments. Phase 31 stubs accept any non-empty string.
+3. Every `POST /forge/blueprint` validation success and every `POST /forge/build` completion must write a `forge_event` observation to iKhaya memory (§7.3.6).
+4. UIGen must log a `FORGE_BUILD_SUBMITTED` governance event (with `build_id`, `grant_id`, `ubuntu_score`, `gate_log_entry_id`) before returning to the caller.
+5. iKhaya narration (`/api/ikhaya/narrate`) must be called once per blueprint submission.
+
+### 12.5 iKhaya forge_event Writes
+
+`ForgeEngine` receives an `IKhayaPresence` instance at `init()` time and calls:
+
+```python
+presence.write_observation(
+    key=f"forge:{event_type}:{blueprint_id}",
+    value={ ...forge_event payload... },
+    category="forge"
+)
+```
+
+Events written:
+- `blueprint_submitted` — on successful `POST /forge/blueprint` validation
+- `build_complete` — on `POST /forge/build` transitioning to `COMPLETE`
+- `build_failed` — on `POST /forge/build` transitioning to `FAILED`
+
+### 12.6 Phase Boundary
+
+| Phase | Forge capability |
+|---|---|
+| Phase 31 | Scaffold only — in-memory state, stub `merkle_root = sha256(blueprint_id)`, `signature = "{FORGE_DID}:stub"`, state loss on restart acceptable |
+| Phase 32 | Real Ed25519 signing, real Merkle tree construction, persistent storage, Mesh-verifiable artifact registry |
 
 ---
 
