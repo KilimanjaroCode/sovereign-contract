@@ -1,6 +1,6 @@
 # SOVEREIGN CONTRACT
 
-**Version:** 1.0
+**Version:** 1.1
 **Authority:** KilimanjaroCode organization
 **Status:** Active
 **Last updated:** 2026-03-16
@@ -335,6 +335,10 @@ Facilitates a Multi-Agent Network for Collective Evaluation (MANCE) deliberation
 }
 ```
 
+**Side effects**
+
+After every call, one `mance_event` observation is written to `ikhaya_memory` (see §7.3.4). When `context.mergedSuggestions` is present, one `critique_event` observation is also written (see §7.3.3).
+
 ---
 
 ## 7. PKL Memory Schemas
@@ -408,20 +412,36 @@ Written automatically after every `/api/ikhaya/interpret-lineage` call.
 }
 ```
 
-#### 7.3.3 `critique_event` observation (category: `"critique"`) — *reserved for Phase 29*
+#### 7.3.3 `critique_event` observation (category: `"critique"`)
+
+Written by `/api/ikhaya/mance-deliberate` when `context.mergedSuggestions` is present. Captures the aggregate result of a coordination round — one entry per critique session, not one per suggestion.
 
 ```typescript
 {
-  artifact_id:   string;
-  agent_did:     string;
-  suggestion_id: string;
-  accepted:      boolean;
-  score:         number;   // relevance/safety/impact composite
-  timestamp:     number;
+  artifact_id:      string;
+  suggestion_count: number;   // total merged suggestions in the round
+  top_agent:        string;   // agent name of the reputation leader
+  a11y_suggestion:  boolean;  // true if any suggestion addresses accessibility
+  timestamp:        number;
 }
 ```
 
-#### 7.3.4 Custom observations
+#### 7.3.4 `mance_event` observation (category: `"mance"`)
+
+Written by `/api/ikhaya/mance-deliberate` after every call, regardless of whether a critique context is present.
+
+```typescript
+{
+  artifact_id:       string | null;   // from context.artifactId, if present
+  agent_count:       number;
+  prompt_prefix:     string;          // first 100 chars of the prompt
+  consensus_reached: boolean;         // true unless recommended_action === "Pause for council reflection."
+  recommended_action: string;
+  timestamp:         number;
+}
+```
+
+#### 7.3.5 Custom observations
 
 External callers may use `write_observation(key, value, category)` to store arbitrary encrypted observations. No schema is enforced beyond the ikhaya_memory table structure. Use the `"preference"` category for Steward preference data.
 
