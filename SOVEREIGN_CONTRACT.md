@@ -1,6 +1,6 @@
 # SOVEREIGN CONTRACT
 
-**Version:** 1.4
+**Version:** 1.6
 **Authority:** KilimanjaroCode organization
 **Status:** Active
 **Last updated:** 2026-03-16
@@ -872,4 +872,140 @@ UIGen instances fetch Mesh artifacts via `fetchMeshArtifact(baseUrl, artifactId)
 
 ---
 
+---
+
+## §15 — Cross-Node Lineage Sync
+
+**Version added:** 1.5
+
+Defines how artifacts carry a verifiable trail of nodes that have touched them, and how remote nodes synchronize lineage over the Mesh.
+
+### 15.1 LineageHop Schema
+
+```
+LineageHop {
+  node_did:   string  // DID of the node that touched the artifact (did:key:…)
+  mesh_id:    string  // artifact ID in that node's Mesh
+  timestamp:  int     // Unix epoch when this node processed the artifact
+}
+```
+
+### 15.2 Extended ArtifactSummary
+
+§14's `ArtifactSummary.lineage_hops` is promoted from `string[]` to `LineageHop[]` (origin-first):
+
+```
+ArtifactSummary {
+  artifact_id:       string
+  origin_node_did:   string
+  lineage_hops:      LineageHop[]   // ordered, origin first
+  content_hash:      string
+  content_mime:      string
+  gate_log_merkle:   string
+  timestamp:         int
+}
+```
+
+### 15.3 Lineage Sync Endpoint
+
+```
+GET /mesh/lineage/{artifact_id}
+
+Response:
+  200 OK  + LineageHop[] (ordered from origin to latest known)
+  404     if artifact_id is unknown
+  403     if Sovereign Gate denies access
+```
+
+### 15.4 Constitutional Rules
+
+1. **Origin Inclusion** — `lineage_hops[0].node_did` MUST equal `origin_node_did`.
+2. **Append-Only** — nodes may append new `LineageHop` entries but MUST NOT mutate existing ones.
+3. **Gate Governance** — all lineage requests are governed by the Sovereign Gate under `action_type = "mesh"`.
+4. **DID Consistency** — each `LineageHop.node_did` MUST start with `did:key:`.
+5. **Integrity** — lineage served at `GET /mesh/lineage/{id}` MUST be consistent with `lineage_hops` in `GET /mesh/artifact/{id}`.
+6. **Non-Leaky** — lineage exposes only node DIDs, mesh_ids, and timestamps — no PKL contents.
+
+### 15.5 UIGen Integration
+
+UIGen extends its Mesh client (`src/lib/mesh-client.ts`) with `fetchMeshLineage(baseUrl, artifactId)`. The `fetchMeshArtifactAction` in `src/actions/fetch-mesh-artifact.ts` fetches both the artifact and its lineage, returning a combined result including a `LineageGraph` built by `src/lib/lineage-graph.ts`.
+
+### 15.6 Phase Boundary
+
+| Phase | Lineage capability |
+|---|---|
+| Phase 42 | Single-hop lineage (`lineage_hops` = [origin]); `LineageStore` (in-memory); `GET /mesh/lineage/{id}`; UIGen lineage graph builder |
+| Phase 43 | Multi-hop propagation (each relay node appends its hop); persistent lineage DB; cross-repo lineage graph rendering |
+
+---
+
 *This contract is the constitution of the interfaces. It is not documentation as an afterthought — it is the written law of the sovereign stack.*
+
+---
+
+## §16 — Trust & Reputation Export
+
+### 16.1 NodeTrustSummary Schema
+
+```
+NodeTrustSummary {
+  node_did:          string   // DID of the node issuing the summary
+  ubuntu_score:      float    // 0.0–1.0 normalized trust score derived from GateLog
+  gate_events_total: int      // total GateLog events considered
+  last_updated:      int      // Unix epoch when summary was computed
+  mesh_version:      string   // Mesh protocol version ("1.0")
+}
+```
+
+### 16.2 ArtifactTrustHint Schema
+
+```
+ArtifactTrustHint {
+  artifact_id:  string   // the artifact this hint describes
+  node_did:     string   // node issuing the hint (self-signed)
+  trust_label:  string   // "high" | "medium" | "low"
+  confidence:   float    // 0.0–1.0 ratio of positive gate events for this artifact
+  last_updated: int      // Unix epoch
+}
+```
+
+### 16.3 Trust Endpoints
+
+**GET /mesh/trust/node**
+```
+Request:  (no body)
+Response:
+  200 OK  + NodeTrustSummary
+  403     if Sovereign Gate denies access
+  503     if router not initialised
+```
+
+**GET /mesh/trust/artifact/{artifact_id}**
+```
+Request:  path parameter artifact_id (string)
+Response:
+  200 OK  + ArtifactTrustHint
+  404     if artifact_id is unknown to this node
+  403     if Sovereign Gate denies access
+  503     if router not initialised
+```
+
+### 16.4 Constitutional Rules
+
+1. **PKL-Safe** — No raw PKL content, prompts, or user data may be exposed. Only aggregated scores and labels are returned.
+2. **Gate Governance** — All trust requests are governed by the Sovereign Gate under `action_type = "mesh"`, `mesh_action = "trust_request"`.
+3. **Local Only** — `NodeTrustSummary` and `ArtifactTrustHint` reflect only this node's view of its own GateLog. No claims about other nodes' internal state.
+4. **Deterministic Inputs** — Trust scores MUST be derived from GateLog `decision` fields and evaluation metrics, not opaque heuristics.
+5. **Non-Binding** — Trust hints are advisory. Consuming nodes MUST NOT treat them as absolute truth.
+6. **Versioned** — `mesh_version` MUST be included to allow future evolution of the trust computation algorithm.
+
+### 16.5 UIGen Integration
+
+UIGen extends `src/lib/mesh-client.ts` with `fetchMeshNodeTrust(baseUrl)` and `fetchMeshArtifactTrust(baseUrl, artifactId)`. `src/lib/trust-signals.ts` provides `combineTrustSignals(node, artifactHint?)` which returns an `EffectiveTrust` label. `fetchMeshArtifactAction` includes a best-effort trust fetch — trust absence never fails the action.
+
+### 16.6 Phase Boundary
+
+| Phase | Trust capability |
+|---|---|
+| Phase 43 | Node-level ubuntu_score from GateLog decision ratio; artifact-level trust from artifact-scoped gate events; UIGen trust signal combination; best-effort fetch (non-fatal) |
+| Phase 44 | Cross-node trust propagation; reputation decay over time; trust-gated mesh relay |
