@@ -743,4 +743,64 @@ Events written:
 
 ---
 
+---
+
+## §13 — Mesh Node Identity & Handshake Protocol
+
+**Version added:** 1.3
+
+This section governs the protocol by which sovereign nodes introduce themselves, verify each other cryptographically, and exchange live state summaries — the constitutional birth of the Mesh pillar.
+
+### 13.1 MeshNode Schema
+
+```
+MeshNode {
+  node_did:          string    // did:key: Ed25519 — canonical node identity
+  node_url:          string    // public HTTPS endpoint of this node
+  node_name:         string    // human-readable label, e.g. "Durban-Home-01"
+  supported_layers:  string[]  // capabilities: ["uigen", "forge", "ikhaya", "mesh"]
+  public_key:        string    // Ed25519 public key as lowercase hex
+  mesh_version:      string    // protocol version, e.g. "1.0"
+  gate_log: {
+    entry_count: int           // total GateLog entries — proxy for node maturity
+    merkle_root: string        // SHA-256 Merkle root of current GateLog chain
+  }
+  pkl_window:        int       // number of exportable PKL memory entries
+  timestamp:         int       // Unix epoch at response time
+}
+```
+
+### 13.2 Handshake Exchange
+
+```
+POST /mesh/handshake
+Request:  { "signature": string }    // Ed25519 signature of the MeshNode payload
+Response: {
+  "accepted":     boolean,
+  "reason"?:      string,           // set when accepted=false
+  "my_node_info": MeshNode | null   // set when accepted=true
+}
+```
+
+### 13.3 Constitutional Rules
+
+1. **Signature Required** — the responder must verify the Ed25519 signature of the requesting node's payload before accepting. Stub (presence check) allowed in Phase 40; real verification in Phase 41.
+2. **Gate Governance** — every handshake is routed through the Sovereign Gate under `action_type = "mesh"`. A gate failure results in `accepted: false`.
+3. **State Summary** — the responder must return its DID, capabilities, GateLog `merkle_root`, `pkl_window`, and `mesh_version` in `my_node_info`.
+4. **Governance Events** — every handshake outcome is logged to the GateLog: `MESH_HANDSHAKE_ACCEPTED` on success, `MESH_HANDSHAKE_REJECTED` on failure. The GateLog entry IS the governance event.
+5. **Re-Handshake** — nodes must re-handshake on reconnect. A changed `merkle_root` signals state divergence and should trigger reconciliation.
+
+### 13.4 UIGen ExternalRepo Integration
+
+When a UIGen instance registers an external repo via `registerExternalRepo`, it attempts `POST /mesh/handshake` on the remote URL. If the handshake succeeds, the remote node's `node_did` is stored as `ExternalRepo.nodeId`. Failure is non-fatal — the repo is registered with `nodeId = null`.
+
+### 13.5 Phase Boundary
+
+| Phase | Mesh capability |
+|---|---|
+| Phase 40 | Node identity (ephemeral, per-process DID), handshake endpoint, Gate-governed, stub signature verification, UIGen stores nodeId |
+| Phase 41 | Persistent node DID (stored in DB), real Ed25519 signature verification, peer registry, bidirectional artifact exchange |
+
+---
+
 *This contract is the constitution of the interfaces. It is not documentation as an afterthought — it is the written law of the sovereign stack.*
