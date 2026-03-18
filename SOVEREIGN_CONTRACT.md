@@ -1,6 +1,6 @@
 # SOVEREIGN CONTRACT
 
-**Version:** 1.2
+**Version:** 1.4
 **Authority:** KilimanjaroCode organization
 **Status:** Active
 **Last updated:** 2026-03-16
@@ -800,6 +800,75 @@ When a UIGen instance registers an external repo via `registerExternalRepo`, it 
 |---|---|
 | Phase 40 | Node identity (ephemeral, per-process DID), handshake endpoint, Gate-governed, stub signature verification, UIGen stores nodeId |
 | Phase 41 | Persistent node DID (stored in DB), real Ed25519 signature verification, peer registry, bidirectional artifact exchange |
+
+---
+
+---
+
+## §14 — Artifact Exchange Protocol
+
+**Version added:** 1.4
+
+Governs the cross-node exchange of build artifacts, including their content, lineage hops, integrity hash, and stub signature. This is the first real federated capability of the Mesh pillar.
+
+### 14.1 ArtifactSummary Schema
+
+```
+ArtifactSummary {
+  artifact_id:      string    // canonical ID in the origin node (e.g. mesh_id)
+  origin_node_did:  string    // DID of the node where this artifact was created
+  lineage_hops:     string[]  // ordered list of node DIDs that have touched this artifact
+  content_hash:     string    // SHA-256 hash of the serialized content field
+  content_mime:     string    // e.g. "application/json"
+  gate_log_merkle:  string    // GateLog Merkle root at time of response
+  timestamp:        int       // Unix epoch
+}
+```
+
+### 14.2 ArtifactResponse Schema
+
+```
+ArtifactResponse {
+  summary:   ArtifactSummary
+  content:   string          // JSON-serialized artifact payload (UTF-8)
+  signature: string          // SHA-256 stub over artifact_id:content_hash (real Ed25519 in Phase 42)
+}
+```
+
+### 14.3 Endpoint
+
+```
+GET /mesh/artifact/{artifact_id}
+
+Response:
+  200 OK  + ArtifactResponse on success
+  404     if artifact_id is unknown
+  403     if Sovereign Gate denies access (gate check failed)
+```
+
+### 14.4 Constitutional Rules
+
+1. **Gate Governance** — all artifact requests are governed by the Sovereign Gate under `action_type = "mesh"`.
+2. **DID Binding** — `origin_node_did` must match the node's DID from §13.
+3. **Lineage Awareness** — `lineage_hops` must include `origin_node_did` as the first element. Multi-hop propagation is Phase 42.
+4. **Integrity** — `content_hash` must be SHA-256 of the `content` field (UTF-8).
+5. **Signature** — stub: SHA-256 of `{artifact_id}:{content_hash}`; real Ed25519 in Phase 42.
+6. **Non-Leaky** — PKL contents are never exposed; only artifact payload and lineage summary are returned.
+
+### 14.5 UIGen Mesh Client Integration
+
+UIGen instances fetch Mesh artifacts via `fetchMeshArtifact(baseUrl, artifactId)` in `src/lib/mesh-client.ts`. The `fetch-mesh-artifact` server action:
+1. Looks up the `ExternalRepo` (already has `nodeId` from §13.4)
+2. Calls `GET {repo.url}/mesh/artifact/{artifactId}`
+3. Validates signature presence
+4. Returns `MeshArtifactResult` to the caller
+
+### 14.6 Phase Boundary
+
+| Phase | Artifact Exchange capability |
+|---|---|
+| Phase 41 | ForgeEngine artifacts served via `/mesh/artifact/{id}`; stub signature (SHA-256); lineage_hops = [origin]; UIGen mesh client; signature presence validation |
+| Phase 42 | Real Ed25519 signing; multi-hop lineage propagation; persistent artifact store |
 
 ---
 
