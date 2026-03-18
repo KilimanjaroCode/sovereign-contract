@@ -1,9 +1,9 @@
 # SOVEREIGN CONTRACT
 
-**Version:** 1.6
+**Version:** 1.7
 **Authority:** KilimanjaroCode organization
 **Status:** Active
-**Last updated:** 2026-03-16
+**Last updated:** 2026-03-19
 
 ---
 
@@ -1008,4 +1008,62 @@ UIGen extends `src/lib/mesh-client.ts` with `fetchMeshNodeTrust(baseUrl)` and `f
 | Phase | Trust capability |
 |---|---|
 | Phase 43 | Node-level ubuntu_score from GateLog decision ratio; artifact-level trust from artifact-scoped gate events; UIGen trust signal combination; best-effort fetch (non-fatal) |
-| Phase 44 | Cross-node trust propagation; reputation decay over time; trust-gated mesh relay |
+| Phase 44 | Ed25519 signature hardening — real signing on handshake response, artifact, and LineageHop; UIGen cryptographic verification against stored publicKey |
+
+---
+
+## §17 — Ed25519 Signature Hardening
+
+**Phase:** 44
+**Status:** Active (v1.7)
+
+### 17.1 Purpose
+
+Replace all SHA-256 stub signatures with real Ed25519 cryptographic signing. Every datum that crosses a node boundary must carry a verifiable signature tied to the sending node's DID key pair.
+
+### 17.2 Canonical Signing Payloads
+
+| Artifact | Payload string (UTF-8) |
+|---|---|
+| Handshake response | `{node_did}:{timestamp}` |
+| Artifact | `{artifact_id}:{content_hash}` |
+| LineageHop | `{node_did}:{mesh_id}:{timestamp}` |
+
+Payloads are colon-delimited deterministic strings. No JSON encoding, no extra whitespace.
+
+### 17.3 Signature Format
+
+- **Algorithm:** Ed25519 detached signature (PyNaCl / Node.js `crypto`)
+- **Encoding:** 64-byte signature → lowercase hex → **128-character string**
+- **Field name:** `signature` on `ArtifactResponse`; `node_signature` on `HandshakeResponse`; `signature` on `LineageHop`
+
+### 17.4 Public Key Format
+
+- **Encoding:** 32-byte Ed25519 verify key → lowercase hex → **64-character string**
+- **Field name:** `public_key` on `MeshNode` (already present since §13)
+- **Persistence:** UIGen stores the key in `ExternalRepo.publicKey` after handshake
+
+### 17.5 Constitutional Rules
+
+1. **Canonical Payload** — signing payloads MUST be the colon-delimited strings defined in §17.2; no variation is permitted.
+2. **Signature Format** — signatures MUST be 128-char lowercase hex; non-conforming signatures MUST be rejected.
+3. **Public Key Format** — public keys MUST be 64-char lowercase hex; non-conforming keys MUST be rejected.
+4. **Verification Required** — consuming nodes MUST verify signatures when `publicKey` is available; if verification fails the consuming operation MUST throw (not silently skip).
+5. **Requester Stub Allowed** — UIGen's outbound handshake `signature` field remains a stub string (`"stub-phase-44"`) until Phase 45 adds UIGen node identity and signing.
+6. **Lineage Custody** — each `LineageHop.signature` cryptographically proves the named `node_did` created that hop at that `timestamp`.
+7. **Singleton Signing Key** — the node signing key MUST be stored as a module-level singleton for the lifetime of the process; discarding it after init is forbidden.
+
+### 17.6 UIGen Integration
+
+UIGen extends its mesh client with:
+- `ExternalRepo.publicKey String?` — stored from `HandshakeResponse.node_signature` / `my_node_info.public_key`
+- `src/lib/ed25519.ts` — `verifyEd25519(signatureHex, payload, publicKeyHex)` using Node.js built-in `crypto`
+- `fetchMeshArtifactAction` verifies artifact signature and all LineageHop signatures when `publicKey` is present
+
+### 17.7 Phase Boundary
+
+| Phase | Signature capability |
+|---|---|
+| Phase 40–43 | SHA-256 stub signatures; presence-only check |
+| Phase 44 | Real Ed25519 signing (Sifiso OS); real Ed25519 verification (UIGen); lineage hop signatures |
+| Phase 45 | UIGen node identity + real outbound handshake signature |
