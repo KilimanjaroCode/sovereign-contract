@@ -1,9 +1,9 @@
 # SOVEREIGN CONTRACT
 
-**Version:** 1.7
+**Version:** 1.8
 **Authority:** KilimanjaroCode organization
 **Status:** Active
-**Last updated:** 2026-03-19
+**Last updated:** 2026-03-19 (Phase 45)
 
 ---
 
@@ -1066,4 +1066,103 @@ UIGen extends its mesh client with:
 |---|---|
 | Phase 40–43 | SHA-256 stub signatures; presence-only check |
 | Phase 44 | Real Ed25519 signing (Sifiso OS); real Ed25519 verification (UIGen); lineage hop signatures |
-| Phase 45 | UIGen node identity + real outbound handshake signature |
+| Phase 45 | Multi-Node MANCE deliberation + Distributed Forge pipelines; trust-weighted assignment |
+
+---
+
+## §18 — Multi-Node MANCE & Distributed Forge Pipelines
+
+**Phase:** 45
+**Status:** Active (v1.8)
+
+### 18.1 Purpose
+
+Enable collective intelligence across Mesh nodes. Phase 45 introduces the first constitutional mechanism for cross-node deliberation (MANCE proposals + votes) and trust-weighted Forge task distribution.
+
+### 18.2 ManceProposal Schema
+
+```
+ManceProposal {
+  proposal_id:      string        // cuid()-style unique ID
+  origin_node_did:  string        // DID of proposing node
+  artifact_id:      string        // artifact under consideration
+  lineage_hops:     LineageHop[]  // from §15 — full custody chain
+  trust:            EffectiveTrust // from §16 — label + scores
+  timestamp:        int           // Unix epoch
+  signature:        string        // Ed25519 hex (128 chars)
+}
+```
+
+Canonical signing payload (§17.2 format):
+```
+{proposal_id}:{artifact_id}:{origin_node_did}:{timestamp}
+```
+
+### 18.3 ManceVote Schema
+
+```
+ManceVote {
+  proposal_id:    string   // references ManceProposal.proposal_id
+  voter_node_did: string
+  vote:           "approve" | "reject"
+  reason:         string
+  timestamp:      int
+  signature:      string   // Ed25519 hex (128 chars)
+}
+```
+
+Canonical signing payload:
+```
+{proposal_id}:{voter_node_did}:{vote}:{timestamp}
+```
+
+### 18.4 ForgeTask Schema
+
+```
+ForgeTask {
+  task_id:           string
+  proposal_id:       string   // references ManceProposal.proposal_id
+  assigned_node_did: string   // deterministically selected
+  artifact_id:       string
+  timestamp:         int
+  signature:         string   // Ed25519 hex (128 chars)
+}
+```
+
+Canonical signing payload:
+```
+{task_id}:{proposal_id}:{assigned_node_did}:{artifact_id}:{timestamp}
+```
+
+### 18.5 Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/mesh/mance/propose` | Create and sign a ManceProposal; gate-governed |
+| `POST` | `/mesh/mance/vote` | Create and sign a ManceVote; gate-governed |
+| `POST` | `/mesh/forge/assign` | Deterministically assign ForgeTask; gate-governed |
+
+### 18.6 Constitutional Rules
+
+1. **Gate Governance** — all MANCE and Forge actions governed under `action_type="mesh"`, `mesh_action="mesh_mance"`.
+2. **DID Binding** — proposals, votes, and tasks MUST be signed by the node issuing them using the Ed25519 key from §17.
+3. **Trust-Weighted** — consuming nodes MUST consider `EffectiveTrust` (§16) when deciding to accept proposals or votes; low-trust nodes MAY be rejected.
+4. **Lineage-Aware** — proposals MUST include `lineage_hops` from §15 to prove custody provenance.
+5. **Append-Only** — votes and tasks are append-only; no mutation of existing records.
+6. **Deterministic Assignment** — `ForgeTask.assigned_node_did` MUST be computed deterministically: `max(peers, key=ubuntu_score)`. Ties broken by DID lexicographic order.
+7. **No PKL Leakage** — MANCE deliberation MUST NOT expose PKL content; only aggregated trust signals from §16 are permitted.
+
+### 18.7 UIGen Integration
+
+UIGen extends the Mesh client with:
+- `src/lib/mance-client.ts` — `proposeMance()`, `voteMance()`, `assignForgeTask()` typed HTTP calls
+- `src/actions/request-distributed-build.ts` — fetches artifact + lineage + trust, builds and posts ManceProposal, collects vote, assigns ForgeTask
+- New types in `src/lib/mesh-client.ts`: `ManceProposal`, `ManceVote`, `ForgeTask`
+
+### 18.8 Phase Boundary
+
+| Phase | Capability |
+|---|---|
+| Phase 43–44 | Trust signals, Ed25519 signing — substrate for §18 |
+| Phase 45 | Cross-node MANCE proposals + votes; trust-weighted ForgeTask assignment |
+| Phase 46 | Persistent MANCE ledger; quorum rules; multi-round deliberation |
