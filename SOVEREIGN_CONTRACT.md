@@ -1,9 +1,9 @@
 # SOVEREIGN CONTRACT
 
-**Version:** 1.8
+**Version:** 2.2
 **Authority:** KilimanjaroCode organization
 **Status:** Active
-**Last updated:** 2026-03-19 (Phase 45)
+**Last updated:** 2026-03-19 (Phase 49 — §22 Peer Registry & UIGen Node Identity)
 
 ---
 
@@ -1067,6 +1067,171 @@ UIGen extends its mesh client with:
 | Phase 40–43 | SHA-256 stub signatures; presence-only check |
 | Phase 44 | Real Ed25519 signing (Sifiso OS); real Ed25519 verification (UIGen); lineage hop signatures |
 | Phase 45 | Multi-Node MANCE deliberation + Distributed Forge pipelines; trust-weighted assignment |
+| Phase 46 | Distributed Critique — peer scoring rounds before assignment; aggregate transparency |
+| Phase 47 | Remote Forge Runners — signed BuildReceipt; logs privacy; receipt verification |
+| Phase 48 | Mesh Orchestrator — scheduling policy; candidate ordering; deterministic decisions |
+
+---
+
+## §19 — Distributed Critique
+
+**Phase:** 46
+**Status:** Active (v1.9)
+
+### 19.1 CritiqueScore Schema
+
+```
+CritiqueScore {
+  proposal_id:     string
+  artifact_id:     string
+  critic_node_did: string
+  score:           float   // 0.0–1.0
+  comment:         string
+  timestamp:       int
+  signature:       string  // Ed25519 hex (128 chars)
+}
+```
+
+Canonical signing payload (§17.2 format):
+```
+{proposal_id}:{artifact_id}:{critic_node_did}:{score}:{timestamp}
+```
+
+### 19.2 CritiqueAggregate Schema
+
+```
+CritiqueAggregate {
+  proposal_id:   string
+  average_score: float
+  count:         int
+}
+```
+
+### 19.3 Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/mesh/critique/submit` | Sign and store a CritiqueScore; gate-governed |
+| `GET` | `/mesh/critique/aggregate/{proposal_id}` | Return average and count; gate-governed |
+
+### 19.4 Constitutional Rules
+
+1. **Gate Governance** — all critique actions governed under `action_type="mesh"`, `mesh_action="mesh_critique"`.
+2. **DID Binding** — `critic_node_did` MUST match the signing node's DID.
+3. **Trust-Weighted (Advisory)** — consuming nodes SHOULD weight scores by the critic's `ubuntu_score`; this is advisory in Phase 46.
+4. **No PKL Exposure** — comments MUST NOT contain raw PKL content.
+5. **Immutable Scores** — no updates; submitting again creates a new record.
+6. **Aggregate Transparency** — `average_score` is a simple arithmetic mean with no hidden weighting.
+
+### 19.5 UIGen Integration
+
+- `src/lib/critique-client.ts` — `submitCritique()`, `getCritiqueAggregate()`
+- `src/lib/mesh-client.ts` — `CritiqueScore`, `CritiqueAggregate` types
+- `request-distributed-build.ts` — self-critique (score=0.9) + aggregate fetch (best-effort, §19.4 Rule 5)
+
+---
+
+## §20 — Remote Forge Execution
+
+**Phase:** 47
+**Status:** Active (v2.0)
+
+### 20.1 BuildReceipt Schema
+
+```
+BuildReceipt {
+  task_id:         string
+  artifact_id:     string
+  runner_node_did: string
+  status:          "success" | "failure"
+  logs_hash:       string   // SHA-256 of build logs (§20.4 Rule 3)
+  timestamp:       int
+  signature:       string   // Ed25519 hex (128 chars)
+}
+```
+
+Canonical signing payload:
+```
+{task_id}:{artifact_id}:{runner_node_did}:{status}:{logs_hash}:{timestamp}
+```
+
+### 20.2 Endpoint
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/mesh/forge/run` | Execute a ForgeTask; return signed BuildReceipt; gate-governed |
+
+### 20.3 Constitutional Rules
+
+1. **Gate Governance** — governed under `action_type="mesh"`, `mesh_action="mesh_forge_run"`.
+2. **Runner Binding** — `runner_node_did` MUST match the executing node's DID; signed with its §17 key.
+3. **Logs Privacy** — only `logs_hash` (SHA-256) exported; raw logs MUST NOT be in the response.
+4. **Deterministic Status** — `status` MUST reflect actual execution outcome.
+5. **Signature Required** — every `BuildReceipt` MUST be signed.
+6. **Verifiable** — consuming nodes MUST verify `BuildReceipt.signature` when `publicKey` is available.
+
+### 20.4 UIGen Integration
+
+- `src/lib/forge-client.ts` — `runForgeTask(baseUrl, task)`
+- `src/lib/mesh-client.ts` — `BuildReceipt` type
+- `request-distributed-build.ts` — runs task post-assignment; verifies receipt signature via §17 `verifyEd25519`
+
+---
+
+## §21 — Mesh Orchestration & Policy
+
+**Phase:** 48
+**Status:** Active (v2.1)
+
+### 21.1 OrchestrationPolicy Schema
+
+```
+OrchestrationPolicy {
+  min_ubuntu_score:  float    // default 0.4
+  max_peers:         int      // default 3
+  retry_on_failure:  boolean  // default true
+  prefer_local_node: boolean  // default true
+  timestamp:         int
+}
+```
+
+### 21.2 OrchestrationDecision Schema
+
+```
+OrchestrationDecision {
+  artifact_id:     string
+  candidate_nodes: string[]  // ordered by ubuntu_score desc, then DID lexicographic
+  policy:          OrchestrationPolicy
+  timestamp:       int
+  signature:       string    // Ed25519 hex (128 chars)
+}
+```
+
+Canonical signing payload:
+```
+{artifact_id}:{candidate_nodes joined by ","}:{timestamp}
+```
+
+### 21.3 Endpoint
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/mesh/orchestrate` | Compute and sign OrchestrationDecision; gate-governed |
+
+### 21.4 Constitutional Rules
+
+1. **Gate Governance** — governed under `action_type="mesh"`, `mesh_action="mesh_orchestrate"`.
+2. **Trust-Driven** — `candidate_nodes` MUST be ordered by `ubuntu_score` descending, then DID lexicographically.
+3. **Policy-Visible** — `OrchestrationPolicy` MUST be explicit in every response.
+4. **Local Preference** — when `prefer_local_node` is true and local node meets `min_ubuntu_score`, local DID appears first.
+5. **Deterministic** — same inputs (artifact_id + trust state) MUST produce same candidate ordering.
+6. **Signature Required** — `OrchestrationDecision` MUST be signed by the orchestrating node.
+
+### 21.5 UIGen Integration
+
+- `src/lib/orchestrator-client.ts` — `requestOrchestration(baseUrl, artifactId)`
+- `src/lib/mesh-client.ts` — `OrchestrationDecision`, `OrchestrationPolicy` types
+- `request-distributed-build.ts` — calls orchestration first (best-effort); uses `candidate_nodes[0]` for assignment
 
 ---
 
@@ -1166,3 +1331,97 @@ UIGen extends the Mesh client with:
 | Phase 43–44 | Trust signals, Ed25519 signing — substrate for §18 |
 | Phase 45 | Cross-node MANCE proposals + votes; trust-weighted ForgeTask assignment |
 | Phase 46 | Persistent MANCE ledger; quorum rules; multi-round deliberation |
+
+---
+
+## §22 — Peer Registry & Node Identity Exchange (Phase 49)
+
+Closes the last single-node stubs in §18 and §21: UIGen gets a real sovereign identity,
+the orchestrator considers registered peers, and quorum requires at least one external vote
+when peers exist.
+
+### 22.1 — PeerNode Schema
+
+```json
+{
+  "node_did":      "<string>  — DID of the remote node (from prior handshake §13)",
+  "url":           "<string>  — Reachable base URL of the remote node",
+  "public_key":    "<string>  — Ed25519 hex public key (64 chars; from handshake §17)",
+  "registered_at": "<int>     — Unix epoch timestamp of registration"
+}
+```
+
+### 22.2 — Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/mesh/peers/register` | Register a known peer; gate-governed |
+| `GET`  | `/mesh/peers`          | List all registered peers |
+
+**Register request body:**
+```json
+{ "node_did": "...", "url": "https://...", "public_key": "..." }
+```
+
+**Register response / List item:**
+```json
+{ "node_did": "...", "url": "...", "public_key": "...", "registered_at": 1700000000 }
+```
+
+### 22.3 — Orchestration Update Rule
+
+> The Orchestrator MUST query the peer registry and include all registered peers
+> meeting `min_ubuntu_score` in `candidate_nodes`, ordered by `ubuntu_score DESC`,
+> DID lexicographic tiebreaker. The local node is included when it also meets the threshold.
+
+### 22.4 — UIGen Node Identity Rule
+
+> UIGen MUST generate a persistent Ed25519 keypair for its own DID.
+> The handshake request body MUST include:
+> ```json
+> { "signature": "<128-char hex of sign({uigen_did}:{timestamp})>",
+>   "node_did":  "<uigen_did>",
+>   "public_key": "<64-char hex>",
+>   "timestamp": <int> }
+> ```
+> UIGen MUST NOT send a stub string as its signature after Phase 49.
+
+UIGen DID format: `did:key:z_uigen_{first 32 hex chars of public key}`.
+
+If `UIGEN_PRIVATE_KEY_HEX` (64-char hex) env var is present the same keypair is used
+across restarts. If absent, an ephemeral key is generated (dev-safe, not prod-safe).
+
+### 22.5 — Quorum Rule (Phase 49 minimum)
+
+> If registered peers exist, the vote step MUST fan-out to at least one peer.
+> A proposal is approved if ≥ 50 % of responding nodes vote "approve".
+> If no peers are registered (bootstrap), self-approval is valid.
+
+Fan-out is best-effort: peers that do not respond within 3 s are treated as abstentions.
+The vote response MUST include:
+```json
+{ ...ManceVote fields..., "quorum_votes": <int>, "quorum_passed": <bool> }
+```
+
+### 22.6 — Constitutional Rules
+
+1. **Gate Governance** — `POST /mesh/peers/register` governed under `action_type="mesh"`, `mesh_action="mesh_peers"`.
+2. **No Stale Peers** — registering a `node_did` that already exists overwrites the record.
+3. **Public Key Stored** — `public_key` from register request must be stored for downstream signature verification.
+4. **Quorum Transparency** — `quorum_votes` and `quorum_passed` must be present in every vote response after Phase 49.
+5. **Fallback Allowed** — when 0 peers are registered, self-approval with `quorum_votes=1`, `quorum_passed=true` is valid.
+
+### 22.7 — UIGen Integration
+
+- `src/lib/uigen-identity.ts` — `getUIGenIdentity()` → `{ did, publicKeyHex, sign(payload) }`
+- `src/actions/register-external-repo.ts` — replaces `"stub-phase-44"` with real Ed25519 signature
+- `src/lib/mesh-client.ts` — `PeerNode` interface; `registerMeshPeer()`, `listMeshPeers()` HTTP clients
+- `src/actions/request-distributed-build.ts` — vote step updated with quorum-aware reason
+
+### 22.8 — Phase Boundary
+
+| Phase | Capability |
+|---|---|
+| Phase 48 | Orchestration with local-only candidates; self-approval vote |
+| Phase 49 | Peer registry; multi-node candidates in orchestration; UIGen real identity; quorum fan-out |
+| Phase 50 | Deployment: ≥ 2 real Sifiso OS nodes + UIGen observe true distributed deliberation |
